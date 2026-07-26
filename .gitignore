@@ -1,0 +1,30 @@
+# Dependencias y compilación
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+# Variables y secretos
+.env
+.env.*
+!.env.example
+
+# Prisma y datos locales
+prisma/*.db
+prisma/*.db-journal
+src/generated/prisma/
+
+# Herramientas y sistema
+.DS_Store
+*.log
+.idea/
+.vscode/
+
+# Archivos subidos en desarrollo
+storage/
+
+.vercel/
+
+# Mantener únicamente la plantilla sin credenciales
+!.env.example

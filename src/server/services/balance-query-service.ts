@@ -2,6 +2,7 @@ import "server-only";
 
 import { DateTime } from "luxon";
 
+import { isEcuadorHoliday } from "@/lib/holidays";
 import type { IsoDate } from "@/domain/time-balance-service";
 import { TimeBalanceService } from "@/domain/time-balance-service";
 import {
@@ -90,9 +91,10 @@ export async function calculateBalanceRange(
     const entry = user.dailyEntries.find(
       (value) => toIsoDate(value.date) === date,
     );
+    const isHoliday = isEcuadorHoliday(date);
     const isWorkingDay =
       Boolean(entry && entry.scheduledMinutes > 0) ||
-      (date >= accountStart && Boolean(scheduleDay?.isWorkingDay));
+      (date >= accountStart && Boolean(scheduleDay?.isWorkingDay) && !isHoliday);
     const scheduledMinutes =
       entry?.scheduledMinutes ??
       (isWorkingDay ? (scheduleDay?.expectedMinutes ?? 0) : 0);

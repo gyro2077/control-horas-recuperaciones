@@ -193,13 +193,6 @@ export async function createDailyEntry(
 
   if (input.mode === "SCHEDULED") {
     const today = dateInTimezone(new Date(), schedule.user.timezone);
-    if (input.date === today && new Date() < normalEnd) {
-      throw new AppError(
-        "DAY_IN_PROGRESS",
-        "Tu horario todavía no termina. Podrás confirmarlo al finalizar.",
-        409,
-      );
-    }
   }
 
   if (input.mode === "CUSTOM") {
@@ -254,16 +247,7 @@ export async function createDailyEntry(
       input.endTime,
       schedule.user.timezone,
     );
-    if (
-      input.date === dateInTimezone(new Date(), schedule.user.timezone) &&
-      endDateTime > new Date()
-    ) {
-      throw new AppError(
-        "DAY_IN_PROGRESS",
-        "Podrás guardar el día cuando llegue la hora de salida.",
-        409,
-      );
-    }
+
     const different = calculateDifferentSchedule(scheduledMinutes);
     breakMinutes = different.breakMinutes;
     workedMinutes = different.workedMinutes;
@@ -287,16 +271,7 @@ export async function createDailyEntry(
       input.endTime,
       schedule.user.timezone,
     );
-    if (
-      input.date === dateInTimezone(new Date(), schedule.user.timezone) &&
-      recoveryEndDateTime > new Date()
-    ) {
-      throw new AppError(
-        "RECOVERY_IN_PROGRESS",
-        "Podrás guardar la recuperación cuando llegue la hora de salida.",
-        409,
-      );
-    }
+
     let recovery;
     try {
       recovery = TimeBalanceService.calculateRecovery(

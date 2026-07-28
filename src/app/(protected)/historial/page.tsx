@@ -12,21 +12,11 @@ import { calculateBalanceRange } from "@/server/services/balance-query-service";
 export const metadata: Metadata = { title: "Historial" };
 export const dynamic = "force-dynamic";
 
-const labels = {
-  COMPLETED: "Cumplido",
-  INCOMPLETE: "Pendiente",
-  PERMISSION: "Permiso",
-  EXTRA: "Adicional",
-  NON_WORKING: "No laborable",
-  IN_PROGRESS: "En curso",
-  FUTURE: "Próximo",
-} as const;
-
 const permissionLabels: Record<string, string> = {
   UNIVERSITY: "Universidad",
-  PERSONAL: "Permiso personal",
-  MEDICAL: "Cita médica",
-  ILLNESS: "Enfermedad",
+  PERSONAL: "Permiso",
+  MEDICAL: "Médico",
+  ILLNESS: "Salud",
   ABSENCE: "Ausencia",
   OTHER: "Otro",
 };
@@ -78,29 +68,37 @@ export default async function HistoryPage({
   }
 
   const today = dateInTimezone(new Date(), target.timezone);
-  const from = DateTime.fromISO(today)
-    .minus({ days: 60 })
-    .toISODate() as `${number}-${number}-${number}`;
+  const now = DateTime.fromISO(today);
+  
+  // Desde el día 1 del mes anterior hasta el fin del mes actual
+  const from = now.minus({ months: 1 }).startOf("month").toISODate() as `${number}-${number}-${number}`;
+  const to = now.endOf("month").toISODate() as `${number}-${number}-${number}`;
+
   const result = await calculateBalanceRange(
     target.id,
     target.timezone,
     from,
-    today,
+    to,
   );
-  const workingDays = result.days
-    .filter((day) => day.status !== "NON_WORKING")
-    .reverse();
+
+  // Agrupar los días devueltos en meses
+  const months = result.days.reduce((acc, day) => {
+    const monthKey = day.date.substring(0, 7);
+    if (!acc[monthKey]) acc[monthKey] = [];
+    acc[monthKey].push(day);
+    return acc;
+  }, {} as Record<string, typeof result.days>);
 
   return (
     <div className="space-y-6">
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <p className="text-sm font-bold text-teal-700">Últimos 60 días</p>
+          <p className="text-sm font-bold text-teal-700">Progreso Reciente</p>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight">
             Historial de {target.name}
           </h1>
           <p className="mt-2 text-slate-500">
-            Cada fila muestra lo esperado, lo trabajado y la diferencia.
+            Visualiza tu trabajo diario en el calendario.
           </p>
         </div>
         {!isAdmin ? (
@@ -136,64 +134,77 @@ export default async function HistoryPage({
         </form>
       ) : null}
 
-      <section className="card overflow-hidden">
-        {workingDays.length === 0 ? (
-          <div className="px-6 py-16 text-center">
-            <p className="font-semibold">Todavía no existen jornadas.</p>
-            <p className="mt-2 text-sm text-slate-500">
-              El historial aparecerá después de registrar el primer día.
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-left text-sm">
-              <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
-                <tr>
-                  <th className="px-5 py-3">Fecha</th>
-                  <th className="px-5 py-3">Estado</th>
-                  <th className="px-5 py-3">Esperado</th>
-                  <th className="px-5 py-3">Trabajado</th>
-                  <th className="px-5 py-3">Diferencia</th>
-                  <th className="px-5 py-3">Detalle</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {workingDays.map((day) => (
-                  <tr key={day.date}>
-                    <td className="px-5 py-4 font-semibold">{day.date}</td>
-                    <td className="px-5 py-4">
-                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold">
-                        {labels[day.status]}
-                      </span>
-                    </td>
-                    <td className="px-5 py-4">
-                      {formatMinutes(day.scheduledMinutes)}
-                    </td>
-                    <td className="px-5 py-4">
-                      {formatMinutes(day.workedMinutes)}
-                    </td>
-                    <td
-                      className={`px-5 py-4 font-bold ${
-                        day.balanceMinutes < 0
-                          ? "text-amber-700"
-                          : "text-teal-700"
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        {Object.entries(months).map(([monthKey, days]) => {
+          const dt = DateTime.fromISO(`${monthKey}-01`).setLocale("es");
+          const monthName = dt.toFormat("MMMM yyyy");
+          // weekday es 1 (Lunes) a 7 (Domingo). Restamos 1 para offset (Lunes=0).
+          const startOffset = dt.weekday - 1; 
+
+          return (
+            <section key={monthKey} className="card p-6">
+              <h2 className="mb-4 text-xl font-bold capitalize text-slate-800">{monthName}</h2>
+              <div className="grid grid-cols-7 gap-2">
+                {["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"].map((d) => (
+                  <div key={d} className="text-center text-xs font-semibold text-slate-400">
+                    {d}
+                  </div>
+                ))}
+                
+                {Array.from({ length: startOffset }).map((_, i) => (
+                  <div key={`pad-${i}`} className="h-[5.5rem] rounded-lg bg-slate-50/50" />
+                ))}
+
+                {days.map((day) => {
+                  const dayNum = parseInt(day.date.substring(8, 10), 10);
+                  const isNonWorking = day.status === "NON_WORKING";
+                  const isFuture = day.status === "FUTURE";
+                  
+                  return (
+                    <div
+                      key={day.date}
+                      className={`relative flex h-[5.5rem] flex-col rounded-lg border p-1.5 transition-colors ${
+                        isNonWorking || isFuture
+                          ? "border-slate-100 bg-slate-50/70"
+                          : day.date === today
+                            ? "border-teal-200 bg-teal-50/30"
+                            : "border-slate-200 bg-white"
                       }`}
                     >
-                      {day.balanceMinutes > 0 ? "+" : ""}
-                      {formatMinutes(day.balanceMinutes)}
-                    </td>
-                    <td className="max-w-xs px-5 py-4 text-slate-500">
-                      {day.permission
-                        ? `${permissionLabels[day.permission.kind] ?? day.permission.kind} · faltaron ${formatMinutes(day.permission.durationMinutes)}`
-                        : (day.entry?.note ?? "—")}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+                      <span className={`text-sm font-semibold ${isNonWorking || isFuture ? "text-slate-400" : "text-slate-700"}`}>
+                        {dayNum}
+                      </span>
+                      
+                      {!isNonWorking && !isFuture && (
+                        <div className="mt-auto flex flex-col">
+                          <span
+                            className={`text-xs font-bold leading-none ${
+                              day.balanceMinutes < 0
+                                ? "text-amber-600"
+                                : day.balanceMinutes > 0
+                                  ? "text-teal-600"
+                                  : "text-slate-500"
+                            }`}
+                          >
+                            {day.balanceMinutes > 0 ? "+" : ""}
+                            {day.balanceMinutes !== 0 ? formatMinutes(day.balanceMinutes) : "OK"}
+                          </span>
+                        </div>
+                      )}
+                      
+                      {day.permission && (
+                        <span className="mt-auto text-[10px] font-medium text-indigo-600 leading-none truncate" title={day.permission.kind}>
+                          {permissionLabels[day.permission.kind] ?? "Permiso"}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
+      </div>
     </div>
   );
 }

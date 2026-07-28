@@ -32,7 +32,7 @@ type ExistingEntry = {
 type Mode = "SCHEDULED" | "DIFFERENT" | "ABSENCE";
 
 const HALF_HOUR_OPTIONS = Array.from(
-  { length: (22 - 6) * 2 + 1 },
+  { length: (18 - 6) * 2 },
   (_, index) => {
     const totalMinutes = 6 * 60 + index * 30;
     return `${String(Math.floor(totalMinutes / 60)).padStart(2, "0")}:${String(
@@ -400,8 +400,9 @@ export function DailyEntryForm({
                   </p>
                   {differentPreview.breakMinutes > 0 ? (
                     <p className="mt-2 text-xs text-slate-500">
-                      El cálculo ya incluye 1 h de descanso por jornada
-                      extendida.
+                      El cálculo incluye{" "}
+                      {formatMinutes(differentPreview.breakMinutes)} de descanso
+                      configurado.
                     </p>
                   ) : null}
                 </div>

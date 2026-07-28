@@ -33,7 +33,7 @@ export class TimeBalanceError extends Error {
 }
 
 const CLOCK_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
-const DEFAULT_RECOVERY_BREAK_MINUTES = 60;
+const DEFAULT_RECOVERY_BREAK_MINUTES = 30;
 
 function assertMinutes(value: number, field: string, allowNegative = false) {
   if (!Number.isSafeInteger(value) || (!allowNegative && value < 0)) {
@@ -199,17 +199,17 @@ export const TimeBalanceService = {
       DEFAULT_RECOVERY_BREAK_MINUTES,
     );
 
-    return [60, 120].flatMap((balanceMinutes) => {
+    const suggestions = [];
+    for (let balanceMinutes = 30; balanceMinutes <= 300; balanceMinutes += 30) {
       const endMinutes =
         startMinutes + scheduledMinutes + breakMinutes + balanceMinutes;
-      if (endMinutes >= 24 * 60) return [];
-      return [
-        {
-          endTime: minutesToClock(endMinutes),
-          balanceMinutes,
-        },
-      ];
-    });
+      if (endMinutes >= 24 * 60) break;
+      suggestions.push({
+        endTime: minutesToClock(endMinutes),
+        balanceMinutes,
+      });
+    }
+    return suggestions;
   },
 
   accumulate<T>(

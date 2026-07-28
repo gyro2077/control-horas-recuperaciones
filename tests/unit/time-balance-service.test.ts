@@ -71,18 +71,18 @@ describe("TimeBalanceService", () => {
       0,
     );
 
-    expect(suggestions).toEqual([
-      { endTime: "16:30", balanceMinutes: 60 },
-      { endTime: "17:30", balanceMinutes: 120 },
-    ]);
-    expect(recovery.breakMinutes).toBe(60);
-    expect(recovery.workedMinutes).toBe(480);
-    expect(recovery.balanceMinutes).toBe(120);
+    expect(suggestions).toContainEqual({ endTime: "15:30", balanceMinutes: 30 });
+    expect(suggestions).toContainEqual({ endTime: "16:00", balanceMinutes: 60 });
+    expect(suggestions).toContainEqual({ endTime: "17:00", balanceMinutes: 120 });
+    expect(suggestions).toContainEqual({ endTime: "17:30", balanceMinutes: 150 });
+    expect(recovery.breakMinutes).toBe(30);
+    expect(recovery.workedMinutes).toBe(510);
+    expect(recovery.balanceMinutes).toBe(150);
   });
 
   it("rechaza una recuperación que no genera horas adicionales", () => {
     expect(() =>
-      TimeBalanceService.calculateRecovery("08:30", "15:30", 360, 0),
+      TimeBalanceService.calculateRecovery("08:30", "14:30", 360, 0),
     ).toThrowError(
       expect.objectContaining<Partial<TimeBalanceError>>({
         code: "INVALID_INTERVAL",
@@ -98,8 +98,8 @@ describe("TimeBalanceService", () => {
       0,
     );
     const recovery = TimeBalanceService.calculateDifferentSchedule(
-      "09:30",
-      "17:30",
+      "08:30",
+      "17:00",
       360,
       0,
     );
@@ -107,9 +107,9 @@ describe("TimeBalanceService", () => {
     expect(partial.workedMinutes).toBe(180);
     expect(partial.balanceMinutes).toBe(-180);
     expect(partial.breakMinutes).toBe(0);
-    expect(recovery.workedMinutes).toBe(420);
-    expect(recovery.balanceMinutes).toBe(60);
-    expect(recovery.breakMinutes).toBe(60);
+    expect(recovery.workedMinutes).toBe(480);
+    expect(recovery.balanceMinutes).toBe(120);
+    expect(recovery.breakMinutes).toBe(30);
   });
 
   it("acepta únicamente franjas de treinta minutos", () => {

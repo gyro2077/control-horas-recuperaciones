@@ -25,6 +25,10 @@ const schema = z.discriminatedUnion("mode", [
     note: z.string().trim().max(1_000).optional(),
   }),
   z.object({
+    mode: z.literal("COMPENSATED"),
+    date,
+  }),
+  z.object({
     mode: z.literal("CUSTOM"),
     date,
     startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
@@ -41,6 +45,7 @@ const schema = z.discriminatedUnion("mode", [
     date,
     startTime: halfHour,
     endTime: halfHour,
+    breakMinutes: z.number().int().min(0).max(1_440).optional(),
     permissionKind: z.enum(PermissionKind).optional(),
     reason: z.string().trim().max(500).optional(),
   }),

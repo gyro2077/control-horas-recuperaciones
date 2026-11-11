@@ -94,6 +94,95 @@ suite("flujos integrados del MVP con PostgreSQL", () => {
     expect(user.id).toBe(ids.user);
   });
 
+  it("corrige una jornada con versión, sin duplicar la nota y rechazando versiones antiguas", async () => {
+    const { correctDailyEntry } =
+      await import("@/server/services/daily-entry-service");
+    const entry = await database.dailyEntry.create({
+      data: {
+        userId: ids.user,
+        date: new Date("2026-07-30T00:00:00Z"),
+        scheduledMinutes: 360,
+        workedMinutes: 300,
+        balanceMinutes: -60,
+        breakMinutes: 0,
+        type: "CUSTOM",
+      },
+    });
+    const actor = {
+      id: ids.admin,
+      name: "Admin Integración",
+      email: `${marker}-admin@example.test`,
+      role: "ADMIN" as const,
+      timezone: "America/Guayaquil",
+    };
+    const version = entry.updatedAt.toISOString();
+    const corrected = await correctDailyEntry(actor, entry.id, {
+      workedMinutes: 420,
+      reason: "Ajuste de fichaje",
+      version,
+    });
+    const replay = await correctDailyEntry(actor, entry.id, {
+      workedMinutes: 420,
+      reason: "Ajuste de fichaje",
+      version,
+    });
+    expect(replay.updatedAt).toEqual(corrected.updatedAt);
+    expect(replay.note?.match(/Corrección administrativa/g)).toHaveLength(1);
+    expect(replay.balanceMinutes).toBe(60);
+
+    await expect(
+      correctDailyEntry(actor, entry.id, {
+        workedMinutes: 360,
+        reason: "Otra corrección",
+        version,
+      }),
+    ).rejects.toMatchObject({ code: "ENTRY_VERSION_CONFLICT", status: 409 });
+    await expect(
+      correctDailyEntry(
+        {
+          ...actor,
+          id: ids.user,
+          role: "USER",
+        },
+        entry.id,
+        {
+          workedMinutes: 360,
+          reason: "Sin permiso",
+          version: corrected.updatedAt.toISOString(),
+        },
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN", status: 403 });
+  });
+
+  it("guarda el descanso realmente tomado al registrar horas diferentes", async () => {
+    const { createDailyEntry } =
+      await import("@/server/services/daily-entry-service");
+    const entry = await createDailyEntry(
+      {
+        id: ids.user,
+        name: "Usuario Integración",
+        email: `${marker}-user@example.test`,
+        role: "USER",
+        timezone: "America/Guayaquil",
+      },
+      ids.user,
+      {
+        mode: "DIFFERENT",
+        date: "2026-07-31",
+        startTime: "08:30",
+        endTime: "15:30",
+        breakMinutes: 60,
+      },
+    );
+
+    expect(entry).toMatchObject({
+      scheduledMinutes: 360,
+      workedMinutes: 360,
+      breakMinutes: 60,
+      balanceMinutes: 0,
+    });
+  });
+
   it("permite editar el perfil propio y cambiar la contraseña", async () => {
     const { updateOwnProfile, changeOwnPassword } =
       await import("@/server/services/user-service");
@@ -245,6 +334,152 @@ suite("flujos integrados del MVP con PostgreSQL", () => {
         },
       }),
     ).toBe(1);
+  });
+
+  it("serializa confirmaciones concurrentes de una misma jornada", async () => {
+    const { createDailyEntry } =
+      await import("@/server/services/daily-entry-service");
+    const actor = {
+      id: ids.user,
+      name: "Usuario Integración",
+      email: `${marker}-user@example.test`,
+      role: "USER" as const,
+      timezone: "America/Guayaquil",
+    };
+    const [first, second] = await Promise.all([
+      createDailyEntry(actor, ids.user, {
+        mode: "DIFFERENT",
+        date: "2026-07-27",
+        startTime: "08:30",
+        endTime: "15:00",
+      }),
+      createDailyEntry(actor, ids.user, {
+        mode: "DIFFERENT",
+        date: "2026-07-27",
+        startTime: "08:30",
+        endTime: "15:30",
+      }),
+    ]);
+
+    expect(first.id).toBe(second.id);
+    expect(
+      await database.dailyEntry.count({
+        where: {
+          userId: ids.user,
+          date: new Date("2026-07-27T00:00:00Z"),
+        },
+      }),
+    ).toBe(1);
+    const stored = await database.dailyEntry.findUniqueOrThrow({
+      where: { id: first.id },
+    });
+    expect(stored.workedMinutes).toBe(second.workedMinutes);
+  });
+
+  it("compensa un día completo solo cuando el crédito cubre la jornada", async () => {
+    const { createDailyEntry } =
+      await import("@/server/services/daily-entry-service");
+    const actor = {
+      id: ids.user,
+      name: "Usuario Integración",
+      email: `${marker}-user@example.test`,
+      role: "USER" as const,
+      timezone: "America/Guayaquil",
+    };
+    await database.dailyEntry.create({
+      data: {
+        userId: ids.user,
+        date: new Date("2026-07-27T00:00:00.000Z"),
+        scheduledMinutes: 360,
+        workedMinutes: 720,
+        balanceMinutes: 360,
+        breakMinutes: 0,
+        type: "CUSTOM",
+      },
+    });
+
+    const compensated = await createDailyEntry(actor, ids.user, {
+      mode: "COMPENSATED",
+      date: "2026-07-28",
+    });
+
+    expect(compensated).toMatchObject({
+      scheduledMinutes: 360,
+      workedMinutes: 0,
+      balanceMinutes: -360,
+      breakMinutes: 0,
+      type: "CUSTOM",
+      startDateTime: null,
+      endDateTime: null,
+      permission: null,
+    });
+    await expect(
+      createDailyEntry(actor, ids.user, {
+        mode: "COMPENSATED",
+        date: "2026-07-29",
+      }),
+    ).rejects.toMatchObject({ code: "INSUFFICIENT_CREDIT" });
+  });
+
+  it("registra permiso solo por el faltante que el crédito no cubre", async () => {
+    const { createDailyEntry } =
+      await import("@/server/services/daily-entry-service");
+    const { calculateBalanceRange } =
+      await import("@/server/services/balance-query-service");
+    const isolatedUser = await database.user.create({
+      data: {
+        name: "Usuario Compensación Parcial",
+        email: `${marker}-compensation@example.test`,
+        passwordHash: "hash-no-utilizado",
+        scheduleId: ids.schedule,
+        createdAt: new Date("2026-07-30T05:00:00.000Z"),
+      },
+    });
+    const actor = {
+      id: isolatedUser.id,
+      name: isolatedUser.name,
+      email: isolatedUser.email,
+      role: "USER" as const,
+      timezone: "America/Guayaquil",
+    };
+    await database.dailyEntry.create({
+      data: {
+        userId: isolatedUser.id,
+        date: new Date("2026-07-30T00:00:00.000Z"),
+        scheduledMinutes: 360,
+        workedMinutes: 390,
+        balanceMinutes: 30,
+        breakMinutes: 0,
+        type: "CUSTOM",
+      },
+    });
+
+    const entry = await createDailyEntry(actor, isolatedUser.id, {
+      mode: "DIFFERENT",
+      date: "2026-07-31",
+      startTime: "08:30",
+      endTime: "12:30",
+      permissionKind: "PERSONAL",
+      reason: "Cita médica",
+    });
+    const range = await calculateBalanceRange(
+      isolatedUser.id,
+      actor.timezone,
+      "2026-07-31",
+      "2026-07-31",
+      { now: new Date("2026-08-01T17:00:00.000Z") },
+    );
+
+    expect(entry).toMatchObject({
+      workedMinutes: 240,
+      balanceMinutes: -120,
+      permission: { durationMinutes: 90, reason: "Cita médica" },
+    });
+    expect(range.days[0]).toMatchObject({
+      compensatedMinutes: 30,
+      pendingMinutes: 90,
+    });
+    await database.user.delete({ where: { id: isolatedUser.id } });
   });
 
   it("unifica horario diferente, permiso parcial y recuperación", async () => {
@@ -438,5 +673,319 @@ suite("flujos integrados del MVP con PostgreSQL", () => {
     expect(report.summary.finalBalanceMinutes).toBe(-60);
     expect(report.summary.debtMinutes).toBe(60);
     expect(report.permissions).toHaveLength(1);
+  });
+
+  describe("saldo con apertura", () => {
+    let targetUserId: string;
+    const timezone = "America/Guayaquil";
+    const now = new Date("2026-07-22T17:00:00Z");
+
+    beforeAll(async () => {
+      const template = await database.user.findUniqueOrThrow({
+        where: { id: ids.user },
+        select: { passwordHash: true },
+      });
+      const target = await database.user.create({
+        data: {
+          name: "Saldo Integración",
+          email: `${marker}-balance@example.test`,
+          passwordHash: template.passwordHash,
+          timezone,
+          scheduleId: ids.schedule,
+          createdAt: new Date("2026-07-20T05:00:00Z"),
+          dailyEntries: {
+            create: [
+              { date: "2026-07-20", workedMinutes: 480 },
+              { date: "2026-07-21", workedMinutes: 300 },
+              { date: "2026-07-23", workedMinutes: 900 },
+            ].map(({ date, workedMinutes }) => ({
+              date: new Date(`${date}T00:00:00Z`),
+              scheduledMinutes: 360,
+              workedMinutes,
+              balanceMinutes: workedMinutes - 360,
+              breakMinutes: 0,
+              type: "CUSTOM",
+            })),
+          },
+        },
+      });
+      targetUserId = target.id;
+    });
+
+    afterAll(async () => {
+      if (targetUserId) {
+        await database.user.delete({ where: { id: targetUserId } });
+      }
+    });
+
+    it("conserva el cierre al cambiar el inicio de la ventana", async () => {
+      const { calculateBalanceRange } =
+        await import("@/server/services/balance-query-service");
+      const full = await calculateBalanceRange(
+        targetUserId,
+        timezone,
+        "2026-07-20",
+        "2026-07-21",
+        { now },
+      );
+      const partial = await calculateBalanceRange(
+        targetUserId,
+        timezone,
+        "2026-07-21",
+        "2026-07-21",
+        { now },
+      );
+
+      expect(full.initialBalanceMinutes).toBe(0);
+      expect(full.balanceMinutes).toBe(60);
+      expect(partial.initialBalanceMinutes).toBe(120);
+      expect(partial.balanceMinutes).toBe(full.balanceMinutes);
+      expect(partial.days).toHaveLength(1);
+      expect(partial.days[0]).toMatchObject({
+        date: "2026-07-21",
+        creditUsedMinutes: 60,
+        creditMinutes: 60,
+        debtMinutes: 0,
+      });
+      expect(partial.calculatedAt).toEqual(now);
+      expect(partial.asOfDate).toBe("2026-07-21");
+    });
+
+    it("expone la fotografía de la jornada existente y el saldo anterior", async () => {
+      const entryDate = new Date("2026-07-21T00:00:00.000Z");
+      await database.dailyEntry.update({
+        where: {
+          userId_date: { userId: targetUserId, date: entryDate },
+        },
+        data: {
+          scheduledMinutes: 420,
+          startDateTime: new Date("2026-07-21T13:30:00.000Z"),
+          endDateTime: new Date("2026-07-21T21:30:00.000Z"),
+          workedMinutes: 450,
+          balanceMinutes: 30,
+          breakMinutes: 30,
+        },
+      });
+      const { getScheduleForDate } =
+        await import("@/server/services/daily-entry-service");
+
+      const result = await getScheduleForDate(targetUserId, "2026-07-21", {
+        now,
+      });
+
+      expect(result.view).toMatchObject({
+        expectedMinutes: 420,
+        breakMinutes: 30,
+        balanceBeforeDateMinutes: 120,
+        timezone,
+      });
+      expect(result.existingEntry).toMatchObject({
+        id: expect.any(String),
+        version: expect.any(String),
+        scheduledMinutes: 420,
+        breakMinutes: 30,
+        startTime: "08:30",
+        endTime: "16:30",
+        workedMinutes: 450,
+      });
+      expect(new Date(result.existingEntry!.version!).toISOString()).toBe(
+        result.existingEntry!.version,
+      );
+    });
+
+    it("obtiene el saldo anterior sin la fecha evaluada ni fechas posteriores", async () => {
+      const { getBalanceBeforeDate } =
+        await import("@/server/services/balance-query-service");
+
+      expect(
+        await getBalanceBeforeDate(targetUserId, "2026-07-20", { now }),
+      ).toBe(0);
+      expect(
+        await getBalanceBeforeDate(targetUserId, "2026-07-21", { now }),
+      ).toBe(120);
+      expect(
+        await getBalanceBeforeDate(targetUserId, "2026-07-22", { now }),
+      ).toBe(60);
+    });
+
+    it("reutiliza el lector transaccional sin modificar jornadas ni usuario", async () => {
+      const { calculateBalanceRange, getBalanceBeforeDate } =
+        await import("@/server/services/balance-query-service");
+      const before = await database.user.findUniqueOrThrow({
+        where: { id: targetUserId },
+        select: { updatedAt: true, dailyEntries: { orderBy: { date: "asc" } } },
+      });
+      const result = await database.$transaction(
+        async (client) => {
+          const range = await calculateBalanceRange(
+            targetUserId,
+            timezone,
+            "2026-07-21",
+            "2026-07-21",
+            { now, client },
+          );
+          const previous = await getBalanceBeforeDate(
+            targetUserId,
+            "2026-07-21",
+            { now, client },
+          );
+          return { range, previous };
+        },
+        { isolationLevel: "RepeatableRead" },
+      );
+      const after = await database.user.findUniqueOrThrow({
+        where: { id: targetUserId },
+        select: { updatedAt: true, dailyEntries: { orderBy: { date: "asc" } } },
+      });
+
+      expect(result.previous).toBe(120);
+      expect(result.range.balanceMinutes).toBe(60);
+      expect(after).toEqual(before);
+    });
+
+    it("calcula dashboard con el instante recibido y sin deuda por días posteriores", async () => {
+      const { getDashboard } =
+        await import("@/server/services/balance-query-service");
+      const dashboard = await getDashboard(targetUserId, timezone, now);
+
+      expect(dashboard.today).toBe("2026-07-22");
+      expect(dashboard.totalDebtMinutes).toBe(0);
+      expect(dashboard.totalCreditMinutes).toBe(60);
+      expect(dashboard.todayDay?.status).toBe("IN_PROGRESS");
+    });
+
+    it("mantiene la fecha actual y los registros futuros fuera del saldo consolidado", async () => {
+      const { calculateBalanceRange } =
+        await import("@/server/services/balance-query-service");
+      const range = await calculateBalanceRange(
+        targetUserId,
+        timezone,
+        "2026-07-22",
+        "2026-07-23",
+        { now },
+      );
+
+      expect(range.initialBalanceMinutes).toBe(60);
+      expect(range.balanceMinutes).toBe(60);
+      expect(range.asOfDate).toBe("2026-07-22");
+      expect(range.days.map((day) => day.balanceMinutes)).toEqual([0, 0]);
+      expect(range.days.map((day) => day.status)).toEqual([
+        "IN_PROGRESS",
+        "FUTURE",
+      ]);
+    });
+  });
+
+  describe("contexto de adelanto", () => {
+    let targetUserId: string;
+    const now = new Date("2026-07-21T17:00:00Z");
+
+    beforeAll(async () => {
+      const template = await database.user.findUniqueOrThrow({
+        where: { id: ids.user },
+        select: { passwordHash: true },
+      });
+      const target = await database.user.create({
+        data: {
+          name: "Contexto Integración",
+          email: `${marker}-context@example.test`,
+          passwordHash: template.passwordHash,
+          timezone: "America/Guayaquil",
+          scheduleId: ids.schedule,
+          createdAt: new Date("2026-07-20T05:00:00Z"),
+          dailyEntries: {
+            create: [
+              { date: "2026-07-20", workedMinutes: 390 },
+              { date: "2026-07-21", workedMinutes: 420 },
+            ].map(({ date, workedMinutes }) => ({
+              date: new Date(`${date}T00:00:00Z`),
+              scheduledMinutes: 360,
+              workedMinutes,
+              balanceMinutes: workedMinutes - 360,
+              breakMinutes: 0,
+              type: "CUSTOM",
+              note: "Nota de contexto",
+            })),
+          },
+        },
+      });
+      targetUserId = target.id;
+    });
+
+    afterAll(async () => {
+      if (targetUserId) {
+        await database.user.delete({ where: { id: targetUserId } });
+      }
+    });
+
+    it("incluye saldo anterior, zona y referencia sin sumar el día editado", async () => {
+      const { getScheduleForDate } =
+        await import("@/server/services/daily-entry-service");
+      const result = await getScheduleForDate(targetUserId, "2026-07-21", {
+        now,
+      });
+
+      expect(result.view).toMatchObject({
+        date: "2026-07-21",
+        expectedMinutes: 360,
+        balanceBeforeDateMinutes: 30,
+        timezone: "America/Guayaquil",
+        calculatedAt: now,
+      });
+      expect(result.existingEntry).toMatchObject({
+        workedMinutes: 420,
+        balanceMinutes: 60,
+        reason: "Nota de contexto",
+      });
+    });
+
+    it("conserva los campos públicos del horario sin filtrar el contexto interno", async () => {
+      const { getScheduleForDate } =
+        await import("@/server/services/daily-entry-service");
+      const result = await getScheduleForDate(targetUserId, "2026-07-21", {
+        now,
+      });
+      const publicData = {
+        schedule: result.view,
+        existingEntry: result.existingEntry,
+      };
+
+      expect(publicData.schedule).toMatchObject({
+        date: "2026-07-21",
+        scheduleName: marker,
+        scheduleType: "INTERN",
+        isWorkingDay: true,
+        startTime: "08:30",
+        endTime: "14:30",
+        breakMinutes: 0,
+        expectedMinutes: 360,
+        balanceBeforeDateMinutes: 30,
+      });
+      expect(JSON.stringify(publicData)).not.toMatch(
+        /"passwordHash"|"sessions"|"failedLoginAttempts"|"lockedUntil"|"user"|"dailyEntries"/,
+      );
+    });
+
+    it("reutiliza un lector transaccional sin modificar el registro", async () => {
+      const { getScheduleForDate } =
+        await import("@/server/services/daily-entry-service");
+      const before = await database.user.findUniqueOrThrow({
+        where: { id: targetUserId },
+        select: { updatedAt: true, dailyEntries: { orderBy: { date: "asc" } } },
+      });
+      const result = await database.$transaction(
+        (client) =>
+          getScheduleForDate(targetUserId, "2026-07-21", { now, client }),
+        { isolationLevel: "RepeatableRead" },
+      );
+      const after = await database.user.findUniqueOrThrow({
+        where: { id: targetUserId },
+        select: { updatedAt: true, dailyEntries: { orderBy: { date: "asc" } } },
+      });
+
+      expect(result.view.balanceBeforeDateMinutes).toBe(30);
+      expect(result.existingEntry?.balanceMinutes).toBe(60);
+      expect(after).toEqual(before);
+    });
   });
 });

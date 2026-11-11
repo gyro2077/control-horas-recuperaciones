@@ -14,6 +14,7 @@ export function AdminEntryRow({
     userName: string;
     workedMinutes: number;
     scheduledMinutes: number;
+    version: string;
   };
 }>) {
   const router = useRouter();
@@ -33,7 +34,7 @@ export function AdminEntryRow({
           "Content-Type": "application/json",
           "X-Requested-With": "control-horas-pwa",
         },
-        body: JSON.stringify({ workedMinutes, reason }),
+        body: JSON.stringify({ workedMinutes, reason, version: entry.version }),
       });
       const body = (await response.json()) as {
         error?: { message?: string };

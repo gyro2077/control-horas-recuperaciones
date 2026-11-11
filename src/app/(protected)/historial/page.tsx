@@ -45,8 +45,9 @@ export default async function HistoryPage({
         },
       ];
   const requestedUserId = (await searchParams).userId;
-  const target =
-    users.find((user) => user.id === requestedUserId) ?? users.at(0) ?? null;
+  const target = isAdmin
+    ? (users.find((user) => user.id === requestedUserId) ?? users.at(0) ?? null)
+    : (users[0] ?? null);
 
   if (!target) {
     return (
@@ -69,9 +70,12 @@ export default async function HistoryPage({
 
   const today = dateInTimezone(new Date(), target.timezone);
   const now = DateTime.fromISO(today);
-  
+
   // Desde el día 1 del mes anterior hasta el fin del mes actual
-  const from = now.minus({ months: 1 }).startOf("month").toISODate() as `${number}-${number}-${number}`;
+  const from = now
+    .minus({ months: 1 })
+    .startOf("month")
+    .toISODate() as `${number}-${number}-${number}`;
   const to = now.endOf("month").toISODate() as `${number}-${number}-${number}`;
 
   const result = await calculateBalanceRange(
@@ -80,14 +84,24 @@ export default async function HistoryPage({
     from,
     to,
   );
+  const currentBalance = result.days.at(-1)?.accumulatedBalanceMinutes ?? 0;
+  const balanceLabel =
+    currentBalance > 0
+      ? "Horas adelantadas"
+      : currentBalance < 0
+        ? "Horas por recuperar"
+        : "Saldo al día";
 
   // Agrupar los días devueltos en meses
-  const months = result.days.reduce((acc, day) => {
-    const monthKey = day.date.substring(0, 7);
-    if (!acc[monthKey]) acc[monthKey] = [];
-    acc[monthKey].push(day);
-    return acc;
-  }, {} as Record<string, typeof result.days>);
+  const months = result.days.reduce(
+    (acc, day) => {
+      const monthKey = day.date.substring(0, 7);
+      if (!acc[monthKey]) acc[monthKey] = [];
+      acc[monthKey].push(day);
+      return acc;
+    },
+    {} as Record<string, typeof result.days>,
+  );
 
   return (
     <div className="space-y-6">
@@ -107,6 +121,36 @@ export default async function HistoryPage({
           </Link>
         ) : null}
       </header>
+
+      <section
+        className="card flex flex-wrap items-end justify-between gap-4 border-teal-200 bg-teal-50/50 p-5 sm:p-6"
+        aria-label="Saldo acumulado del historial"
+      >
+        <div>
+          <p className="text-sm font-bold text-teal-800">{balanceLabel}</p>
+          <p className="mt-1 text-3xl font-semibold tracking-tight text-slate-900">
+            {currentBalance > 0 ? "+" : ""}
+            {formatMinutes(currentBalance)}
+          </p>
+          <p className="mt-1 text-sm text-slate-600">
+            Saldo acumulado al cierre de {result.asOfDate}
+          </p>
+        </div>
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+          <div>
+            <dt className="text-slate-500">Adelanto disponible</dt>
+            <dd className="font-semibold text-teal-800">
+              {formatMinutes(result.creditMinutes)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Deuda pendiente</dt>
+            <dd className="font-semibold text-amber-700">
+              {formatMinutes(result.debtMinutes)}
+            </dd>
+          </div>
+        </dl>
+      </section>
 
       {isAdmin ? (
         <form className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
@@ -139,27 +183,35 @@ export default async function HistoryPage({
           const dt = DateTime.fromISO(`${monthKey}-01`).setLocale("es");
           const monthName = dt.toFormat("MMMM yyyy");
           // weekday es 1 (Lunes) a 7 (Domingo). Restamos 1 para offset (Lunes=0).
-          const startOffset = dt.weekday - 1; 
+          const startOffset = dt.weekday - 1;
 
           return (
             <section key={monthKey} className="card p-6">
-              <h2 className="mb-4 text-xl font-bold capitalize text-slate-800">{monthName}</h2>
+              <h2 className="mb-4 text-xl font-bold text-slate-800 capitalize">
+                {monthName}
+              </h2>
               <div className="grid grid-cols-7 gap-2">
                 {["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"].map((d) => (
-                  <div key={d} className="text-center text-xs font-semibold text-slate-400">
+                  <div
+                    key={d}
+                    className="text-center text-xs font-semibold text-slate-400"
+                  >
                     {d}
                   </div>
                 ))}
-                
+
                 {Array.from({ length: startOffset }).map((_, i) => (
-                  <div key={`pad-${i}`} className="h-[5.5rem] rounded-lg bg-slate-50/50" />
+                  <div
+                    key={`pad-${i}`}
+                    className="h-[5.5rem] rounded-lg bg-slate-50/50"
+                  />
                 ))}
 
                 {days.map((day) => {
                   const dayNum = parseInt(day.date.substring(8, 10), 10);
                   const isNonWorking = day.status === "NON_WORKING";
                   const isFuture = day.status === "FUTURE";
-                  
+
                   return (
                     <div
                       key={day.date}
@@ -171,14 +223,16 @@ export default async function HistoryPage({
                             : "border-slate-200 bg-white"
                       }`}
                     >
-                      <span className={`text-sm font-semibold ${isNonWorking || isFuture ? "text-slate-400" : "text-slate-700"}`}>
+                      <span
+                        className={`text-sm font-semibold ${isNonWorking || isFuture ? "text-slate-400" : "text-slate-700"}`}
+                      >
                         {dayNum}
                       </span>
-                      
+
                       {!isNonWorking && !isFuture && (
                         <div className="mt-auto flex flex-col">
                           <span
-                            className={`text-xs font-bold leading-none ${
+                            className={`text-xs leading-none font-bold ${
                               day.balanceMinutes < 0
                                 ? "text-amber-600"
                                 : day.balanceMinutes > 0
@@ -187,13 +241,18 @@ export default async function HistoryPage({
                             }`}
                           >
                             {day.balanceMinutes > 0 ? "+" : ""}
-                            {day.balanceMinutes !== 0 ? formatMinutes(day.balanceMinutes) : "OK"}
+                            {day.balanceMinutes !== 0
+                              ? formatMinutes(day.balanceMinutes)
+                              : "OK"}
                           </span>
                         </div>
                       )}
-                      
+
                       {day.permission && (
-                        <span className="mt-auto text-[10px] font-medium text-indigo-600 leading-none truncate" title={day.permission.kind}>
+                        <span
+                          className="mt-auto truncate text-[10px] leading-none font-medium text-indigo-600"
+                          title={day.permission.kind}
+                        >
                           {permissionLabels[day.permission.kind] ?? "Permiso"}
                         </span>
                       )}

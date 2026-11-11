@@ -6,6 +6,225 @@ import {
 } from "@/domain/time-balance-service";
 
 describe("TimeBalanceService", () => {
+  describe("movimiento de saldo", () => {
+    it.each([
+      {
+        name: "recupera deuda antes de generar adelanto",
+        previous: -60,
+        daily: 120,
+        expected: {
+          extraMinutes: 120,
+          recoveredMinutes: 60,
+          creditGeneratedMinutes: 60,
+          creditUsedMinutes: 0,
+          uncoveredMinutes: 0,
+          accumulatedBalanceMinutes: 60,
+          creditMinutes: 60,
+          debtMinutes: 0,
+        },
+      },
+      {
+        name: "genera adelanto cuando no existe deuda",
+        previous: 0,
+        daily: 120,
+        expected: {
+          extraMinutes: 120,
+          recoveredMinutes: 0,
+          creditGeneratedMinutes: 120,
+          creditUsedMinutes: 0,
+          uncoveredMinutes: 0,
+          accumulatedBalanceMinutes: 120,
+          creditMinutes: 120,
+          debtMinutes: 0,
+        },
+      },
+      {
+        name: "compensa un faltante con crédito previo",
+        previous: 120,
+        daily: -60,
+        expected: {
+          extraMinutes: 0,
+          recoveredMinutes: 0,
+          creditGeneratedMinutes: 0,
+          creditUsedMinutes: 60,
+          uncoveredMinutes: 0,
+          accumulatedBalanceMinutes: 60,
+          creditMinutes: 60,
+          debtMinutes: 0,
+        },
+      },
+      {
+        name: "crea deuda únicamente por el faltante descubierto",
+        previous: 30,
+        daily: -90,
+        expected: {
+          extraMinutes: 0,
+          recoveredMinutes: 0,
+          creditGeneratedMinutes: 0,
+          creditUsedMinutes: 30,
+          uncoveredMinutes: 60,
+          accumulatedBalanceMinutes: -60,
+          creditMinutes: 0,
+          debtMinutes: 60,
+        },
+      },
+      {
+        name: "distingue deuda anterior del faltante diario descubierto",
+        previous: -60,
+        daily: -30,
+        expected: {
+          extraMinutes: 0,
+          recoveredMinutes: 0,
+          creditGeneratedMinutes: 0,
+          creditUsedMinutes: 0,
+          uncoveredMinutes: 30,
+          accumulatedBalanceMinutes: -90,
+          creditMinutes: 0,
+          debtMinutes: 90,
+        },
+      },
+      {
+        name: "conserva crédito de minutos que no son medias horas",
+        previous: 17,
+        daily: -2,
+        expected: {
+          extraMinutes: 0,
+          recoveredMinutes: 0,
+          creditGeneratedMinutes: 0,
+          creditUsedMinutes: 2,
+          uncoveredMinutes: 0,
+          accumulatedBalanceMinutes: 15,
+          creditMinutes: 15,
+          debtMinutes: 0,
+        },
+      },
+      {
+        name: "conserva el estado de saldo cero",
+        previous: 0,
+        daily: 0,
+        expected: {
+          extraMinutes: 0,
+          recoveredMinutes: 0,
+          creditGeneratedMinutes: 0,
+          creditUsedMinutes: 0,
+          uncoveredMinutes: 0,
+          accumulatedBalanceMinutes: 0,
+          creditMinutes: 0,
+          debtMinutes: 0,
+        },
+      },
+    ])("$name", ({ previous, daily, expected }) => {
+      const movement = TimeBalanceService.calculateBalanceMovement(
+        previous,
+        daily,
+      );
+
+      expect(movement).toEqual(expected);
+      expect(Object.values(movement).every(Number.isSafeInteger)).toBe(true);
+    });
+
+    it.each([
+      [0.5, 60],
+      [0, Number.NaN],
+      [Number.POSITIVE_INFINITY, 0],
+      [Number.MAX_SAFE_INTEGER, 1],
+    ])(
+      "rechaza minutos inválidos o un cierre inseguro (%s, %s)",
+      (previous, daily) => {
+        expect(() =>
+          TimeBalanceService.calculateBalanceMovement(previous, daily),
+        ).toThrowError(
+          expect.objectContaining<Partial<TimeBalanceError>>({
+            code: "INVALID_MINUTES",
+          }),
+        );
+      },
+    );
+
+    it("expone el movimiento de cada día sin cambiar los totales existentes", () => {
+      const days = [
+        { day: "primero", balanceMinutes: 120 },
+        { day: "segundo", balanceMinutes: -30 },
+        { day: "tercero", balanceMinutes: -90 },
+      ] as const;
+      const result = TimeBalanceService.accumulate(days, -60);
+
+      expect(result.days).toEqual([
+        {
+          ...days[0],
+          extraMinutes: 120,
+          recoveredMinutes: 60,
+          creditGeneratedMinutes: 60,
+          creditUsedMinutes: 0,
+          uncoveredMinutes: 0,
+          accumulatedBalanceMinutes: 60,
+          creditMinutes: 60,
+          debtMinutes: 0,
+        },
+        {
+          ...days[1],
+          extraMinutes: 0,
+          recoveredMinutes: 0,
+          creditGeneratedMinutes: 0,
+          creditUsedMinutes: 30,
+          uncoveredMinutes: 0,
+          accumulatedBalanceMinutes: 30,
+          creditMinutes: 30,
+          debtMinutes: 0,
+        },
+        {
+          ...days[2],
+          extraMinutes: 0,
+          recoveredMinutes: 0,
+          creditGeneratedMinutes: 0,
+          creditUsedMinutes: 30,
+          uncoveredMinutes: 60,
+          accumulatedBalanceMinutes: -60,
+          creditMinutes: 0,
+          debtMinutes: 60,
+        },
+      ]);
+      expect(result).toMatchObject({
+        balanceMinutes: -60,
+        creditMinutes: 0,
+        debtMinutes: 60,
+        recoveredMinutes: 60,
+      });
+      expect(days).toEqual([
+        { day: "primero", balanceMinutes: 120 },
+        { day: "segundo", balanceMinutes: -30 },
+        { day: "tercero", balanceMinutes: -90 },
+      ]);
+    });
+
+    it("conserva el saldo inicial cuando no hay jornadas", () => {
+      expect(TimeBalanceService.accumulate([], 17)).toEqual({
+        days: [],
+        balanceMinutes: 17,
+        creditMinutes: 17,
+        debtMinutes: 0,
+        recoveredMinutes: 0,
+      });
+    });
+
+    it("rechaza una recuperación acumulada que deja de ser un entero seguro", () => {
+      const minutes = Number.MAX_SAFE_INTEGER;
+
+      expect(() =>
+        TimeBalanceService.accumulate([
+          { day: 1, balanceMinutes: -minutes },
+          { day: 2, balanceMinutes: minutes },
+          { day: 3, balanceMinutes: -minutes },
+          { day: 4, balanceMinutes: minutes },
+        ]),
+      ).toThrowError(
+        expect.objectContaining<Partial<TimeBalanceError>>({
+          code: "INVALID_MINUTES",
+        }),
+      );
+    });
+  });
+
   it("una semana completa de pasante suma 30 horas sin deuda", () => {
     const days = Array.from({ length: 5 }, (_, index) => ({
       day: index,
@@ -62,6 +281,51 @@ describe("TimeBalanceService", () => {
     expect(worked).toBe(480);
   });
 
+  it.each([0, 30, 60])(
+    "usa descanso efectivo de %s minutos sin imponer una pausa adicional",
+    (effectiveBreakMinutes) => {
+      const worked = TimeBalanceService.calculateWorkedMinutesWithBreak(
+        new Date("2026-07-20T08:30:00Z"),
+        new Date("2026-07-20T17:00:00Z"),
+        effectiveBreakMinutes,
+      );
+
+      expect(worked).toBe(510 - effectiveBreakMinutes);
+    },
+  );
+
+  it("calcula una franja usando descanso programado y descanso realmente tomado", () => {
+    expect(
+      TimeBalanceService.calculateEffectiveInterval(
+        "08:30",
+        "17:00",
+        480,
+        60,
+        30,
+      ),
+    ).toEqual({
+      startTime: "08:30",
+      endTime: "17:00",
+      expectedMinutes: 480,
+      scheduledBreakMinutes: 60,
+      effectiveBreakMinutes: 30,
+      workedMinutes: 480,
+      balanceMinutes: 0,
+    });
+  });
+
+  it("rechaza descanso efectivo que cubre todo el intervalo", () => {
+    expect(() =>
+      TimeBalanceService.calculateEffectiveInterval(
+        "08:30",
+        "09:00",
+        480,
+        0,
+        30,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_INTERVAL" }));
+  });
+
   it("propone y calcula una recuperación sencilla hasta las 17:30", () => {
     const suggestions = TimeBalanceService.recoverySuggestions("08:30", 360, 0);
     const recovery = TimeBalanceService.calculateRecovery(
@@ -71,10 +335,22 @@ describe("TimeBalanceService", () => {
       0,
     );
 
-    expect(suggestions).toContainEqual({ endTime: "15:30", balanceMinutes: 30 });
-    expect(suggestions).toContainEqual({ endTime: "16:00", balanceMinutes: 60 });
-    expect(suggestions).toContainEqual({ endTime: "17:00", balanceMinutes: 120 });
-    expect(suggestions).toContainEqual({ endTime: "17:30", balanceMinutes: 150 });
+    expect(suggestions).toContainEqual({
+      endTime: "15:30",
+      balanceMinutes: 30,
+    });
+    expect(suggestions).toContainEqual({
+      endTime: "16:00",
+      balanceMinutes: 60,
+    });
+    expect(suggestions).toContainEqual({
+      endTime: "17:00",
+      balanceMinutes: 120,
+    });
+    expect(suggestions).toContainEqual({
+      endTime: "17:30",
+      balanceMinutes: 150,
+    });
     expect(recovery.breakMinutes).toBe(30);
     expect(recovery.workedMinutes).toBe(510);
     expect(recovery.balanceMinutes).toBe(150);

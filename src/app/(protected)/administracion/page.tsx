@@ -40,6 +40,7 @@ export default async function AdministrationPage() {
         date: true,
         workedMinutes: true,
         scheduledMinutes: true,
+        updatedAt: true,
         user: { select: { name: true } },
       },
       orderBy: [{ date: "desc" }, { createdAt: "desc" }],
@@ -117,6 +118,7 @@ export default async function AdministrationPage() {
                 userName: entry.user.name,
                 workedMinutes: entry.workedMinutes,
                 scheduledMinutes: entry.scheduledMinutes,
+                version: entry.updatedAt.toISOString(),
               }}
             />
           ))

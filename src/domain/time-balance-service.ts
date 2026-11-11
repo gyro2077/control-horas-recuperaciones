@@ -5,14 +5,22 @@ export type AccumulatedDay<T = unknown> = Readonly<{
   balanceMinutes: number;
 }>;
 
-export type AccumulatedBalanceDay<T = unknown> = Readonly<{
-  day: T;
-  balanceMinutes: number;
+export type BalanceMovement = Readonly<{
+  extraMinutes: number;
   recoveredMinutes: number;
+  creditGeneratedMinutes: number;
+  creditUsedMinutes: number;
+  uncoveredMinutes: number;
   accumulatedBalanceMinutes: number;
   debtMinutes: number;
   creditMinutes: number;
 }>;
+
+export type AccumulatedBalanceDay<T = unknown> = BalanceMovement &
+  Readonly<{
+    day: T;
+    balanceMinutes: number;
+  }>;
 
 export type BalanceSummary<T = unknown> = Readonly<{
   days: readonly AccumulatedBalanceDay<T>[];
@@ -20,6 +28,16 @@ export type BalanceSummary<T = unknown> = Readonly<{
   debtMinutes: number;
   creditMinutes: number;
   recoveredMinutes: number;
+}>;
+
+export type EffectiveInterval = Readonly<{
+  startTime: string;
+  endTime: string;
+  expectedMinutes: number;
+  scheduledBreakMinutes: number;
+  effectiveBreakMinutes: number;
+  workedMinutes: number;
+  balanceMinutes: number;
 }>;
 
 export class TimeBalanceError extends Error {
@@ -42,6 +60,39 @@ function assertMinutes(value: number, field: string, allowNegative = false) {
       `${field} debe expresarse en minutos enteros válidos.`,
     );
   }
+}
+
+function calculateBalanceMovement(
+  previousBalanceMinutes: number,
+  balanceMinutes: number,
+): BalanceMovement {
+  assertMinutes(previousBalanceMinutes, "El saldo previo", true);
+  assertMinutes(balanceMinutes, "El saldo diario", true);
+
+  const accumulatedBalanceMinutes = previousBalanceMinutes + balanceMinutes;
+  assertMinutes(accumulatedBalanceMinutes, "El saldo acumulado", true);
+
+  const extraMinutes = Math.max(0, balanceMinutes);
+  const recoveredMinutes = Math.min(
+    Math.max(0, -previousBalanceMinutes),
+    extraMinutes,
+  );
+  const missingMinutes = Math.max(0, -balanceMinutes);
+  const creditUsedMinutes = Math.min(
+    Math.max(0, previousBalanceMinutes),
+    missingMinutes,
+  );
+
+  return {
+    extraMinutes,
+    recoveredMinutes,
+    creditGeneratedMinutes: extraMinutes - recoveredMinutes,
+    creditUsedMinutes,
+    uncoveredMinutes: missingMinutes - creditUsedMinutes,
+    accumulatedBalanceMinutes,
+    creditMinutes: Math.max(0, accumulatedBalanceMinutes),
+    debtMinutes: Math.max(0, -accumulatedBalanceMinutes),
+  };
 }
 
 function clockToMinutes(value: string): number {
@@ -79,6 +130,8 @@ function assertHalfHour(value: string): number {
 }
 
 export const TimeBalanceService = {
+  calculateBalanceMovement,
+
   calculateWorkedMinutes(start: Date, end: Date, breakMinutes: number): number {
     assertMinutes(breakMinutes, "El descanso");
     const grossMinutes = Math.floor((end.getTime() - start.getTime()) / 60_000);
@@ -96,6 +149,45 @@ export const TimeBalanceService = {
     }
 
     return grossMinutes - breakMinutes;
+  },
+
+  calculateWorkedMinutesWithBreak(
+    start: Date,
+    end: Date,
+    effectiveBreakMinutes: number,
+  ): number {
+    return this.calculateWorkedMinutes(start, end, effectiveBreakMinutes);
+  },
+
+  calculateEffectiveInterval(
+    startTime: string,
+    endTime: string,
+    expectedMinutes: number,
+    scheduledBreakMinutes: number,
+    effectiveBreakMinutes: number,
+  ): EffectiveInterval {
+    assertMinutes(expectedMinutes, "Los minutos esperados");
+    assertMinutes(scheduledBreakMinutes, "El descanso programado");
+    assertMinutes(effectiveBreakMinutes, "El descanso efectivo");
+    const start = assertHalfHour(startTime);
+    const end = assertHalfHour(endTime);
+    const grossMinutes = end - start;
+    if (grossMinutes <= 0 || effectiveBreakMinutes >= grossMinutes) {
+      throw new TimeBalanceError(
+        "INVALID_INTERVAL",
+        "La salida debe ser posterior a la entrada y el descanso menor que la jornada.",
+      );
+    }
+    const workedMinutes = grossMinutes - effectiveBreakMinutes;
+    return {
+      startTime,
+      endTime,
+      expectedMinutes,
+      scheduledBreakMinutes,
+      effectiveBreakMinutes,
+      workedMinutes,
+      balanceMinutes: workedMinutes - expectedMinutes,
+    };
   },
 
   calculateDay(scheduledMinutes: number, workedMinutes: number) {
@@ -223,22 +315,18 @@ export const TimeBalanceService = {
     const accumulatedDays: AccumulatedBalanceDay<T>[] = [];
 
     for (const current of days) {
-      assertMinutes(current.balanceMinutes, "El saldo diario", true);
-      const debtBefore = Math.max(0, -accumulatedBalanceMinutes);
-      const recoveredToday = Math.min(
-        debtBefore,
-        Math.max(0, current.balanceMinutes),
+      const movement = calculateBalanceMovement(
+        accumulatedBalanceMinutes,
+        current.balanceMinutes,
       );
 
-      accumulatedBalanceMinutes += current.balanceMinutes;
-      recoveredMinutes += recoveredToday;
+      accumulatedBalanceMinutes = movement.accumulatedBalanceMinutes;
+      recoveredMinutes += movement.recoveredMinutes;
+      assertMinutes(recoveredMinutes, "La recuperación acumulada");
       accumulatedDays.push({
         day: current.day,
         balanceMinutes: current.balanceMinutes,
-        recoveredMinutes: recoveredToday,
-        accumulatedBalanceMinutes,
-        debtMinutes: Math.max(0, -accumulatedBalanceMinutes),
-        creditMinutes: Math.max(0, accumulatedBalanceMinutes),
+        ...movement,
       });
     }
 

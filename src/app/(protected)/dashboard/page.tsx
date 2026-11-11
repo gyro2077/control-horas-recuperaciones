@@ -111,15 +111,33 @@ export default async function DashboardPage() {
           tone="lime"
         />
         <MetricCard
-          label="Deuda acumulada"
-          value={formatMinutes(dashboard.totalDebtMinutes)}
+          label={
+            dashboard.totalCreditMinutes > 0
+              ? "Horas adelantadas"
+              : dashboard.totalDebtMinutes > 0
+                ? "Horas por recuperar"
+                : "Saldo histórico"
+          }
+          value={formatMinutes(
+            dashboard.totalCreditMinutes > 0
+              ? dashboard.totalCreditMinutes
+              : dashboard.totalDebtMinutes,
+          )}
           helper={
-            dashboard.totalDebtMinutes
-              ? "Se reduce automáticamente con horas adicionales."
-              : "Vas al día."
+            dashboard.totalCreditMinutes > 0
+              ? "Tiempo a favor disponible para compensar jornadas cortas o completas."
+              : dashboard.totalDebtMinutes > 0
+                ? "Se reduce automáticamente con horas adicionales."
+                : "Sin deuda ni adelanto acumulado."
           }
           icon={TimerReset}
-          tone={dashboard.totalDebtMinutes ? "amber" : "teal"}
+          tone={
+            dashboard.totalCreditMinutes
+              ? "lime"
+              : dashboard.totalDebtMinutes
+                ? "amber"
+                : "teal"
+          }
         />
         <MetricCard
           label="Horas recuperadas"

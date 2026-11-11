@@ -16,23 +16,26 @@ type ScheduleView = {
   endTime: string | null;
   breakMinutes: number;
   expectedMinutes: number;
+  balanceBeforeDateMinutes: number;
 };
 
 type ExistingEntry = {
   id: string;
+  version: string;
   type: "SCHEDULED" | "CUSTOM" | "PERMISSION";
   startTime: string | null;
   endTime: string | null;
   workedMinutes: number;
+  breakMinutes: number;
   balanceMinutes: number;
   permissionKind: string | null;
   reason: string | null;
 };
 
-type Mode = "SCHEDULED" | "DIFFERENT" | "ABSENCE";
+type Mode = "SCHEDULED" | "DIFFERENT" | "COMPENSATED" | "ABSENCE";
 
 const HALF_HOUR_OPTIONS = Array.from(
-  { length: (18 - 6) * 2 },
+  { length: (20 - 6) * 2 + 1 },
   (_, index) => {
     const totalMinutes = 6 * 60 + index * 30;
     return `${String(Math.floor(totalMinutes / 60)).padStart(2, "0")}:${String(
@@ -70,6 +73,9 @@ export function DailyEntryForm({
   const [endTime, setEndTime] = useState(
     initialExistingEntry?.endTime ?? initialSchedule?.endTime ?? "14:30",
   );
+  const [breakMinutes, setBreakMinutes] = useState(
+    initialExistingEntry?.breakMinutes ?? initialSchedule?.breakMinutes ?? 0,
+  );
   const [permissionKind, setPermissionKind] = useState(
     initialExistingEntry?.permissionKind ?? "OTHER",
   );
@@ -88,6 +94,9 @@ export function DailyEntryForm({
       nextExistingEntry?.startTime ?? nextSchedule.startTime ?? "08:30",
     );
     setEndTime(nextExistingEntry?.endTime ?? nextSchedule.endTime ?? "14:30");
+    setBreakMinutes(
+      nextExistingEntry?.breakMinutes ?? nextSchedule.breakMinutes,
+    );
     setPermissionKind(nextExistingEntry?.permissionKind ?? "OTHER");
     setNote(nextExistingEntry?.reason ?? "");
   };
@@ -136,18 +145,22 @@ export function DailyEntryForm({
   const differentPreview = useMemo(() => {
     if (!schedule?.isWorkingDay) return null;
     try {
-      return TimeBalanceService.calculateDifferentSchedule(
+      return TimeBalanceService.calculateEffectiveInterval(
         startTime,
         endTime,
         schedule.expectedMinutes,
         schedule.breakMinutes,
+        breakMinutes,
       );
     } catch {
       return null;
     }
-  }, [endTime, schedule, startTime]);
+  }, [breakMinutes, endTime, schedule, startTime]);
   const balanceMinutes = differentPreview?.balanceMinutes ?? 0;
   const isMissingTime = balanceMinutes < 0;
+  const timeOptions = Array.from(
+    new Set([startTime, endTime, ...HALF_HOUR_OPTIONS]),
+  ).sort();
 
   const changeDate = (nextDate: string) => {
     setMode(null);
@@ -170,23 +183,26 @@ export function DailyEntryForm({
       const payload =
         mode === "SCHEDULED"
           ? { mode, date }
-          : mode === "DIFFERENT"
-            ? {
-                mode,
-                date,
-                startTime,
-                endTime,
-                permissionKind: isMissingTime ? permissionKind : undefined,
-                reason: note || undefined,
-              }
-            : {
-                mode: "PERMISSION",
-                date,
-                permissionKind,
-                workedMinutes: 0,
-                fullDay: true,
-                reason: note || undefined,
-              };
+          : mode === "COMPENSATED"
+            ? { mode, date }
+            : mode === "DIFFERENT"
+              ? {
+                  mode,
+                  date,
+                  startTime,
+                  endTime,
+                  breakMinutes,
+                  permissionKind: isMissingTime ? permissionKind : undefined,
+                  reason: note || undefined,
+                }
+              : {
+                  mode: "PERMISSION",
+                  date,
+                  permissionKind,
+                  workedMinutes: 0,
+                  fullDay: true,
+                  reason: note || undefined,
+                };
       const response = await fetch("/api/daily-entries", {
         method: "POST",
         headers: {
@@ -227,6 +243,18 @@ export function DailyEntryForm({
       helper: "Entré o salí a otra hora",
       icon: Clock3,
     },
+    ...(!existingEntry &&
+    schedule &&
+    schedule.balanceBeforeDateMinutes >= schedule.expectedMinutes
+      ? [
+          {
+            id: "COMPENSATED" as const,
+            label: "Compensar jornada",
+            helper: `Usar ${formatMinutes(schedule.expectedMinutes)} de saldo a favor`,
+            icon: BadgeCheck,
+          },
+        ]
+      : []),
     {
       id: "ABSENCE" as const,
       label: "No trabajé",
@@ -326,6 +354,19 @@ export function DailyEntryForm({
             </div>
           ) : null}
 
+          {mode === "COMPENSATED" ? (
+            <div className="rounded-2xl bg-lime-50 p-5">
+              <p className="font-bold text-lime-950">
+                Jornada cubierta con tu saldo
+              </p>
+              <p className="mt-2 text-sm text-slate-700">
+                Usaremos {formatMinutes(schedule?.expectedMinutes ?? 0)} de tus{" "}
+                {formatMinutes(schedule?.balanceBeforeDateMinutes ?? 0)} a
+                favor. No se registrarán horas trabajadas.
+              </p>
+            </div>
+          ) : null}
+
           {mode === "DIFFERENT" ? (
             <>
               <div>
@@ -333,8 +374,8 @@ export function DailyEntryForm({
                   Selecciona cuándo entraste y cuándo saliste
                 </p>
                 <p className="mt-1 text-sm text-slate-500">
-                  Solo usamos horas completas y medias horas. El sistema
-                  calculará automáticamente el resultado.
+                  Elige horas completas o medias horas hasta las 20:00. Indica
+                  el descanso que realmente tomaste.
                 </p>
               </div>
               <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -348,7 +389,7 @@ export function DailyEntryForm({
                     value={startTime}
                     onChange={(event) => setStartTime(event.target.value)}
                   >
-                    {HALF_HOUR_OPTIONS.map((time) => (
+                    {timeOptions.map((time) => (
                       <option key={time} value={time}>
                         {time}
                       </option>
@@ -365,13 +406,35 @@ export function DailyEntryForm({
                     value={endTime}
                     onChange={(event) => setEndTime(event.target.value)}
                   >
-                    {HALF_HOUR_OPTIONS.map((time) => (
+                    {timeOptions.map((time) => (
                       <option key={time} value={time}>
                         {time}
                       </option>
                     ))}
                   </select>
                 </div>
+              </div>
+
+              <div className="mt-4 max-w-xs">
+                <label className="label" htmlFor="actual-break">
+                  Descanso tomado (minutos)
+                </label>
+                <input
+                  id="actual-break"
+                  className="input"
+                  type="number"
+                  min={0}
+                  max={1_440}
+                  step={1}
+                  value={breakMinutes}
+                  onChange={(event) =>
+                    setBreakMinutes(Number(event.target.value))
+                  }
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  El horario propone{" "}
+                  {formatMinutes(schedule?.breakMinutes ?? 0)}.
+                </p>
               </div>
 
               {differentPreview ? (
@@ -398,11 +461,11 @@ export function DailyEntryForm({
                         ? `Te faltarán ${formatMinutes(-balanceMinutes)}`
                         : "Cumpliste tu jornada"}
                   </p>
-                  {differentPreview.breakMinutes > 0 ? (
+                  {differentPreview.effectiveBreakMinutes > 0 ? (
                     <p className="mt-2 text-xs text-slate-500">
                       El cálculo incluye{" "}
-                      {formatMinutes(differentPreview.breakMinutes)} de descanso
-                      configurado.
+                      {formatMinutes(differentPreview.effectiveBreakMinutes)} de
+                      descanso realmente tomado.
                     </p>
                   ) : null}
                 </div>

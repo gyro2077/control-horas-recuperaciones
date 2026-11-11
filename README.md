@@ -133,6 +133,9 @@ Cloud permanece exclusivamente en el servidor.
 
 ## Documentación
 
+- [Flujo SDD, aprobaciones, comandos y habilidades](docs/SDD.md)
+- [Constitución del proyecto](docs/constitution.md)
+- [Especificaciones](specs/README.md)
 - [Arquitectura](docs/ARCHITECTURE.md)
 - [Modelo entidad-relación](docs/ERD.md)
 - [Reglas de cálculo](docs/CALCULATION.md)
